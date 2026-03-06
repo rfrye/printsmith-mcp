@@ -1,0 +1,12 @@
+# MCP Server
+mcp>=1.0.0
+
+# HTTP client for PrintSmith API
+httpx>=0.27.0
+
+# HTTP server for remote transport
+uvicorn>=0.30.0
+starlette>=0.38.0
+
+# Async support
+anyio>=4.0.0
