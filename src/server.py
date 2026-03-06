@@ -2,25 +2,28 @@
 """
 PrintSmith MCP Server
 =====================
-MCP server exposing PrintSmith Vision functionality to Claude.
+MCP server exposing PrintSmith Vision data to Claude via direct PostgreSQL connection.
 
 Supports two transport modes:
 - STDIO: For local Claude Desktop (default)
 - HTTP/SSE: For remote access from LXC/Docker containers
 
 Environment Variables:
-    PRINTSMITH_BASE_URL     - PrintSmith server URL (required for live mode)
-    PRINTSMITH_API_TOKEN    - API token (required for live mode)
-    PRINTSMITH_VERIFY_SSL   - Verify SSL certificates (default: true)
-    MCP_TRANSPORT           - Transport mode: "stdio" or "http" (default: stdio)
-    MCP_HTTP_PORT           - HTTP port when using http transport (default: 8080)
-    MCP_HTTP_HOST           - HTTP host binding (default: 0.0.0.0)
-    USE_MOCK_DATA           - Use mock data instead of real API (default: false)
+    PG_HOST             - PostgreSQL host (required for live mode)
+    PG_PORT             - PostgreSQL port (default: 5432)
+    PG_DATABASE         - Database name (default: printsmith)
+    PG_USER             - Database user (default: postgres)
+    PG_PASSWORD         - Database password (required for live mode)
+    PG_TIMEOUT          - Query timeout in seconds (default: 30)
+    MCP_TRANSPORT       - Transport mode: "stdio" or "http" (default: stdio)
+    MCP_HTTP_PORT       - HTTP port when using http transport (default: 8080)
+    MCP_HTTP_HOST       - HTTP host binding (default: 0.0.0.0)
+    USE_MOCK_DATA       - Use mock data instead of real DB (default: false)
 
 Usage:
     # STDIO mode (local Claude Desktop)
     python server.py
-    
+
     # HTTP mode (remote/LXC)
     MCP_TRANSPORT=http MCP_HTTP_PORT=8080 python server.py
 """
@@ -50,30 +53,32 @@ logger = logging.getLogger("printsmith-mcp")
 
 class Config:
     """Server configuration from environment variables."""
-    
-    # PrintSmith connection
-    PRINTSMITH_BASE_URL = os.getenv("PRINTSMITH_BASE_URL", "")
-    PRINTSMITH_API_TOKEN = os.getenv("PRINTSMITH_API_TOKEN", "")
-    PRINTSMITH_VERIFY_SSL = os.getenv("PRINTSMITH_VERIFY_SSL", "true").lower() == "true"
-    PRINTSMITH_TIMEOUT = int(os.getenv("PRINTSMITH_TIMEOUT", "30"))
-    
+
+    # PostgreSQL connection
+    PG_HOST = os.getenv("PG_HOST", "")
+    PG_PORT = int(os.getenv("PG_PORT", "5432"))
+    PG_DATABASE = os.getenv("PG_DATABASE", "printsmith")
+    PG_USER = os.getenv("PG_USER", "postgres")
+    PG_PASSWORD = os.getenv("PG_PASSWORD", "")
+    PG_TIMEOUT = int(os.getenv("PG_TIMEOUT", "30"))
+
     # MCP transport
     MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")  # "stdio" or "http"
     MCP_HTTP_PORT = int(os.getenv("MCP_HTTP_PORT", "8080"))
     MCP_HTTP_HOST = os.getenv("MCP_HTTP_HOST", "0.0.0.0")
-    
+
     # Development
     USE_MOCK_DATA = os.getenv("USE_MOCK_DATA", "false").lower() == "true"
-    
+
     @classmethod
     def validate(cls):
-        """Validate configuration."""
+        """Validate configuration and fall back to mock if DB not configured."""
         if not cls.USE_MOCK_DATA:
-            if not cls.PRINTSMITH_BASE_URL:
-                logger.warning("PRINTSMITH_BASE_URL not set - falling back to mock data")
+            if not cls.PG_HOST:
+                logger.warning("PG_HOST not set — falling back to mock data")
                 cls.USE_MOCK_DATA = True
-            elif not cls.PRINTSMITH_API_TOKEN:
-                logger.warning("PRINTSMITH_API_TOKEN not set - falling back to mock data")
+            elif not cls.PG_PASSWORD:
+                logger.warning("PG_PASSWORD not set — falling back to mock data")
                 cls.USE_MOCK_DATA = True
 
 
@@ -82,161 +87,154 @@ Config.validate()
 
 
 # =============================================================================
-# MOCK DATA (for testing without PrintSmith)
+# MOCK DATA (for testing without a PrintSmith database)
 # =============================================================================
 
 MOCK_CUSTOMERS = {
     "1001": {
-        "id": "1001",
-        "account_number": "ACME-001",
+        "accountid": 1001,
+        "accountnumber": "ACME-001",
         "name": "Acme Corporation",
         "contact": "John Smith",
         "email": "john@acme.com",
         "phone": "555-0101",
-        "credit_status": "good",
-        "credit_limit": 10000,
+        "creditstatus": "good",
+        "creditlimit": 10000,
         "balance": 2450.00,
-        "account_type": "charge",
-        "sales_rep": "Mike Johnson",
-        "addresses": [
-            {"type": "billing", "address": "123 Main St, Suite 100, Springfield, IL 62701"}
-        ],
+        "accounttype": "charge",
+        "salesrep": "Mike Johnson",
         "notes": "Prefers glossy stock. Rush jobs OK with 24hr notice."
     },
     "1002": {
-        "id": "1002",
-        "account_number": "DRTY-002", 
+        "accountid": 1002,
+        "accountnumber": "DRTY-002",
         "name": "Downtown Realty",
         "contact": "Sarah Chen",
         "email": "sarah@downtownrealty.com",
         "phone": "555-0102",
-        "credit_status": "good",
-        "credit_limit": 5000,
+        "creditstatus": "good",
+        "creditlimit": 5000,
         "balance": 0,
-        "account_type": "charge",
-        "sales_rep": "Mike Johnson",
-        "addresses": [
-            {"type": "billing", "address": "456 Oak Ave, Downtown, Springfield, IL 62702"}
-        ],
+        "accounttype": "charge",
+        "salesrep": "Mike Johnson",
         "notes": "Monthly flyer order, usually 5000 qty."
     },
     "1003": {
-        "id": "1003",
-        "account_number": "QSS-003",
+        "accountid": 1003,
+        "accountnumber": "QSS-003",
         "name": "Quick Start Startup",
         "contact": "Alex Rivera",
         "email": "alex@quickstart.io",
         "phone": "555-0103",
-        "credit_status": "new",
-        "credit_limit": 1000,
+        "creditstatus": "new",
+        "creditlimit": 1000,
         "balance": 750.00,
-        "account_type": "cod",
-        "sales_rep": "Lisa Park",
-        "addresses": [],
+        "accounttype": "cod",
+        "salesrep": "Lisa Park",
         "notes": "New customer. Interested in business cards and marketing materials."
     }
 }
 
-MOCK_JOBS = {
+MOCK_INVOICES = {
     "J-2024-0156": {
-        "job_id": "27230",
-        "job_number": "J-2024-0156",
-        "invoice_number": "INV-2024-0892",
-        "account_id": "1001",
+        "invoiceid": 27230,
+        "invoicenumber": "J-2024-0156",
+        "accountid": 1001,
         "customer_name": "Acme Corporation",
         "description": "8.5x11 Brochures, Tri-fold, 4/4",
         "quantity": 2500,
         "status": "in_production",
         "station": "Press 2",
-        "due_date": (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"),
-        "price": 1250.00,
+        "duedate": (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"),
+        "total": 1250.00,
         "paper": "100# Gloss Text",
-        "created_date": (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d"),
-        "special_instructions": "Customer will pick up. Call when ready.",
-        "taken_by": "admin",
-        "sales_rep": "Mike Johnson"
+        "createdate": (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d"),
+        "specialinstructions": "Customer will pick up. Call when ready.",
+        "takenby": "admin",
+        "salesrep": "Mike Johnson"
     },
     "J-2024-0157": {
-        "job_id": "27231",
-        "job_number": "J-2024-0157",
-        "invoice_number": "INV-2024-0893",
-        "account_id": "1002",
+        "invoiceid": 27231,
+        "invoicenumber": "J-2024-0157",
+        "accountid": 1002,
         "customer_name": "Downtown Realty",
         "description": "Property Flyers, 8.5x11, 4/0",
         "quantity": 5000,
         "status": "ready_for_pickup",
         "station": "Bindery Complete",
-        "due_date": datetime.now().strftime("%Y-%m-%d"),
-        "price": 450.00,
+        "duedate": datetime.now().strftime("%Y-%m-%d"),
+        "total": 450.00,
         "paper": "80# Gloss Text",
-        "created_date": (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"),
-        "special_instructions": "",
-        "taken_by": "admin",
-        "sales_rep": "Mike Johnson"
+        "createdate": (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"),
+        "specialinstructions": "",
+        "takenby": "admin",
+        "salesrep": "Mike Johnson"
     },
     "J-2024-0158": {
-        "job_id": "27232",
-        "job_number": "J-2024-0158",
-        "invoice_number": None,
-        "account_id": "1003",
+        "invoiceid": 27232,
+        "invoicenumber": "J-2024-0158",
+        "accountid": 1003,
         "customer_name": "Quick Start Startup",
         "description": "Business Cards, 2x3.5, 4/4",
         "quantity": 500,
         "status": "pending_approval",
         "station": "Prepress",
-        "due_date": (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d"),
-        "price": 125.00,
+        "duedate": (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d"),
+        "total": 125.00,
         "paper": "14pt C2S",
-        "created_date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
-        "special_instructions": "Waiting on customer proof approval",
-        "taken_by": "lisa",
-        "sales_rep": "Lisa Park"
+        "createdate": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "specialinstructions": "Waiting on customer proof approval",
+        "takenby": "lisa",
+        "salesrep": "Lisa Park"
     }
 }
 
 MOCK_ESTIMATES = {
     "E-2024-0089": {
-        "estimate_id": "5501",
-        "estimate_number": "E-2024-0089",
-        "account_id": "1003",
+        "estimateid": 5501,
+        "estimatenumber": "E-2024-0089",
+        "accountid": 1003,
         "customer_name": "Quick Start Startup",
         "description": "Promotional Postcards",
         "quantity": 2000,
         "status": "pending",
-        "price": 385.00,
-        "created_date": (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"),
-        "valid_until": (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d"),
-        "taken_by": "lisa",
-        "sales_rep": "Lisa Park"
+        "total": 385.00,
+        "createdate": (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"),
+        "validuntil": (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d"),
+        "takenby": "lisa",
+        "salesrep": "Lisa Park"
     }
 }
 
 
 # =============================================================================
-# PRINTSMITH API CLIENT (conditionally loaded)
+# DATABASE CLIENT (conditionally loaded)
 # =============================================================================
 
-_ps_client = None
+_db_client = None
 
-async def get_printsmith_client():
-    """Get or create the PrintSmith API client."""
-    global _ps_client
-    
+
+async def get_db():
+    """Get or create the PrintSmith PostgreSQL client."""
+    global _db_client
+
     if Config.USE_MOCK_DATA:
         return None
-    
-    if _ps_client is None:
-        from printsmith_client import PrintSmithClient, PrintSmithConfig
-        
-        config = PrintSmithConfig(
-            base_url=Config.PRINTSMITH_BASE_URL,
-            api_token=Config.PRINTSMITH_API_TOKEN,
-            timeout=Config.PRINTSMITH_TIMEOUT,
-            verify_ssl=Config.PRINTSMITH_VERIFY_SSL
+
+    if _db_client is None:
+        from printsmith_db import PrintSmithDB, PrintSmithDBConfig
+
+        config = PrintSmithDBConfig(
+            host=Config.PG_HOST,
+            port=Config.PG_PORT,
+            database=Config.PG_DATABASE,
+            user=Config.PG_USER,
+            password=Config.PG_PASSWORD,
+            timeout=Config.PG_TIMEOUT,
         )
-        _ps_client = PrintSmithClient(config)
-    
-    return _ps_client
+        _db_client = PrintSmithDB(config)
+
+    return _db_client
 
 
 # =============================================================================
@@ -266,13 +264,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_job_status",
-            description="Get the current status of a print job including production location, due date, and special instructions. READ-ONLY.",
+            description="Get the current status of an invoice/job including production location, due date, and special instructions. READ-ONLY.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "job_number": {
                         "type": "string",
-                        "description": "The job number (e.g., J-2024-0156)"
+                        "description": "The invoice/job number (e.g., J-2024-0156) or numeric invoice ID"
                     }
                 },
                 "required": ["job_number"]
@@ -280,7 +278,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="list_jobs",
-            description="List jobs filtered by status. Useful for seeing what's in production, ready for pickup, pending approval, etc. READ-ONLY.",
+            description="List invoices/jobs filtered by status. Useful for seeing what's in production, ready for pickup, pending approval, etc. READ-ONLY.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -304,7 +302,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_customer_jobs",
-            description="Get all jobs (current and recent) for a specific customer. READ-ONLY.",
+            description="Get all invoices/jobs (current and recent) for a specific customer. READ-ONLY.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -333,13 +331,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_estimate",
-            description="Get details of a specific estimate by estimate number. READ-ONLY.",
+            description="Get details of a specific estimate by estimate number or ID. READ-ONLY.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "estimate_number": {
                         "type": "string",
-                        "description": "The estimate number (e.g., E-2024-0089)"
+                        "description": "The estimate number (e.g., E-2024-0089) or numeric estimate ID"
                     }
                 },
                 "required": ["estimate_number"]
@@ -360,8 +358,41 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="discover_schema",
+            description="Discover the PrintSmith PostgreSQL schema — lists all tables and columns. Use this first if other tools return errors, to verify the actual column/table names in your installation.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "table_name": {
+                        "type": "string",
+                        "description": "Optional: show columns for a specific table only (e.g., 'account', 'invoice')"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="sample_table",
+            description="Return a few sample rows from any PrintSmith table. Useful for seeing actual data formats and verifying column names. READ-ONLY.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "table_name": {
+                        "type": "string",
+                        "description": "Table name to sample (e.g., 'account', 'invoice', 'estimate')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of rows to return (default: 3, max: 10)",
+                        "default": 3
+                    }
+                },
+                "required": ["table_name"]
+            }
+        ),
+        Tool(
             name="health_check",
-            description="Check if the PrintSmith connection is working. Returns connection status and any errors.",
+            description="Check if the PrintSmith PostgreSQL connection is working. Returns connection status, database name, and PostgreSQL version.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -373,27 +404,31 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """Handle tool calls - all read-only operations."""
-    
-    client = await get_printsmith_client()
-    
+    """Handle tool calls — all read-only operations."""
+
+    db = await get_db()
+
     try:
         if name == "lookup_customer":
-            return await _lookup_customer(client, arguments)
+            return await _lookup_customer(db, arguments)
         elif name == "get_job_status":
-            return await _get_job_status(client, arguments)
+            return await _get_job_status(db, arguments)
         elif name == "list_jobs":
-            return await _list_jobs(client, arguments)
+            return await _list_jobs(db, arguments)
         elif name == "get_customer_jobs":
-            return await _get_customer_jobs(client, arguments)
+            return await _get_customer_jobs(db, arguments)
         elif name == "get_ar_summary":
-            return await _get_ar_summary(client, arguments)
+            return await _get_ar_summary(db, arguments)
         elif name == "get_estimate":
-            return await _get_estimate(client, arguments)
+            return await _get_estimate(db, arguments)
         elif name == "list_pending_estimates":
-            return await _list_pending_estimates(client, arguments)
+            return await _list_pending_estimates(db, arguments)
+        elif name == "discover_schema":
+            return await _discover_schema(db, arguments)
+        elif name == "sample_table":
+            return await _sample_table(db, arguments)
         elif name == "health_check":
-            return await _health_check(client)
+            return await _health_check(db)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -405,200 +440,212 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 # TOOL IMPLEMENTATIONS
 # =============================================================================
 
-async def _lookup_customer(client, arguments: dict) -> list[TextContent]:
-    """Look up customer by name or ID."""
-    query = arguments.get("query", "").lower().strip()
-    
+async def _lookup_customer(db, arguments: dict) -> list[TextContent]:
+    """Look up customer by name, ID, or account number."""
+    query = arguments.get("query", "").strip()
+
     if not query:
         return [TextContent(type="text", text="Please provide a customer name or ID to search for.")]
-    
+
     if Config.USE_MOCK_DATA:
+        q = query.lower()
         results = []
         for cust in MOCK_CUSTOMERS.values():
-            if (query in cust["name"].lower() or 
-                query == cust["id"] or 
-                query == cust["account_number"].lower()):
+            if (q in cust["name"].lower() or
+                    q == str(cust["accountid"]) or
+                    q == cust["accountnumber"].lower()):
                 results.append(cust)
     else:
-        # Use real API
         try:
-            # Try by account_id first
+            results = []
             if query.isdigit():
-                result = await client.get_account(query)
-                results = [result] if result else []
-            else:
-                results = await client.search_accounts(name=query)
+                # Try by numeric ID
+                row = await db.get_account(query)
+                if row:
+                    results = [row]
+            if not results:
+                # Try by account number exact match
+                row = await db.get_account_by_number(query)
+                if row:
+                    results = [row]
+            if not results:
+                # Fall back to name search
+                results = await db.search_accounts(name=query)
         except Exception as e:
-            return [TextContent(type="text", text=f"API error: {str(e)}")]
-    
+            return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
     if not results:
-        return [TextContent(type="text", text=f"No customers found matching '{arguments.get('query')}'")]
-    
+        return [TextContent(type="text", text=f"No customers found matching '{query}'")]
+
     return [TextContent(type="text", text=json.dumps(results, indent=2, default=str))]
 
 
-async def _get_job_status(client, arguments: dict) -> list[TextContent]:
-    """Get status of a specific job."""
-    job_number = arguments.get("job_number", "").upper().strip()
-    
+async def _get_job_status(db, arguments: dict) -> list[TextContent]:
+    """Get status of a specific invoice/job."""
+    job_number = arguments.get("job_number", "").strip()
+
     if not job_number:
-        return [TextContent(type="text", text="Please provide a job number.")]
-    
+        return [TextContent(type="text", text="Please provide a job/invoice number.")]
+
     if Config.USE_MOCK_DATA:
-        job = MOCK_JOBS.get(job_number)
+        invoice = MOCK_INVOICES.get(job_number.upper())
     else:
         try:
-            job = await client.get_job(job_number)
+            if job_number.isdigit():
+                invoice = await db.get_invoice(job_number)
+            else:
+                invoice = await db.get_invoice_by_number(job_number)
         except Exception as e:
-            return [TextContent(type="text", text=f"API error: {str(e)}")]
-    
-    if not job:
-        return [TextContent(type="text", text=f"Job {job_number} not found")]
-    
-    return [TextContent(type="text", text=json.dumps(job, indent=2, default=str))]
+            return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
+    if not invoice:
+        return [TextContent(type="text", text=f"Job/invoice '{job_number}' not found")]
+
+    return [TextContent(type="text", text=json.dumps(invoice, indent=2, default=str))]
 
 
-async def _list_jobs(client, arguments: dict) -> list[TextContent]:
-    """List jobs with optional filters."""
+async def _list_jobs(db, arguments: dict) -> list[TextContent]:
+    """List invoices/jobs with optional filters."""
     status_filter = arguments.get("status", "all")
     customer_filter = arguments.get("customer_name", "").lower()
     days_back = arguments.get("days_back", 30)
-    
+
     if Config.USE_MOCK_DATA:
         results = []
         cutoff_date = datetime.now() - timedelta(days=days_back)
-        
-        for job in MOCK_JOBS.values():
-            # Status filter
-            if status_filter != "all" and job["status"] != status_filter:
+
+        for inv in MOCK_INVOICES.values():
+            if status_filter != "all" and inv["status"] != status_filter:
                 continue
-            # Customer filter
-            if customer_filter and customer_filter not in job["customer_name"].lower():
+            if customer_filter and customer_filter not in inv["customer_name"].lower():
                 continue
-            # Date filter
-            job_date = datetime.strptime(job["created_date"], "%Y-%m-%d")
-            if job_date < cutoff_date:
+            inv_date = datetime.strptime(inv["createdate"], "%Y-%m-%d")
+            if inv_date < cutoff_date:
                 continue
-            results.append(job)
+            results.append(inv)
     else:
         try:
             if status_filter != "all":
-                results = await client.get_jobs_by_status(status_filter)
+                results = await db.get_invoices_by_status(status_filter)
             else:
                 start_date = datetime.now() - timedelta(days=days_back)
-                results = await client.get_jobs_by_date_range(start_date)
-            
-            # Apply customer filter if specified
+                results = await db.get_invoices_by_date_range(start_date)
+
             if customer_filter:
-                results = [j for j in results if customer_filter in j.get("customer_name", "").lower()]
+                results = [
+                    r for r in results
+                    if customer_filter in (r.get("customer_name") or r.get("name") or "").lower()
+                ]
         except Exception as e:
-            return [TextContent(type="text", text=f"API error: {str(e)}")]
-    
+            return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
     if not results:
-        return [TextContent(type="text", text="No jobs found matching criteria")]
-    
+        return [TextContent(type="text", text="No jobs/invoices found matching criteria")]
+
     return [TextContent(type="text", text=json.dumps(results, indent=2, default=str))]
 
 
-async def _get_customer_jobs(client, arguments: dict) -> list[TextContent]:
-    """Get all jobs for a customer."""
-    customer_name = arguments.get("customer_name", "").lower()
-    
+async def _get_customer_jobs(db, arguments: dict) -> list[TextContent]:
+    """Get all invoices for a customer."""
+    customer_name = arguments.get("customer_name", "").strip()
+
     if not customer_name:
         return [TextContent(type="text", text="Please provide a customer name.")]
-    
+
     if Config.USE_MOCK_DATA:
-        results = [j for j in MOCK_JOBS.values() if customer_name in j["customer_name"].lower()]
+        results = [
+            inv for inv in MOCK_INVOICES.values()
+            if customer_name.lower() in inv["customer_name"].lower()
+        ]
     else:
         try:
-            # First find the customer
-            customers = await client.search_accounts(name=customer_name)
+            customers = await db.search_accounts(name=customer_name)
             if not customers:
-                return [TextContent(type="text", text=f"No customer found matching '{arguments.get('customer_name')}'")]
-            
-            account_id = customers[0].get("id") or customers[0].get("account_id")
-            results = await client.get_invoices_by_account(account_id)
+                return [TextContent(type="text", text=f"No customer found matching '{customer_name}'")]
+
+            account_id = str(customers[0].get("accountid") or customers[0].get("account_id") or "")
+            if not account_id:
+                return [TextContent(type="text", text="Found customer but could not determine account ID")]
+
+            results = await db.get_invoices_by_account(account_id)
         except Exception as e:
-            return [TextContent(type="text", text=f"API error: {str(e)}")]
-    
+            return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
     if not results:
-        return [TextContent(type="text", text=f"No jobs found for customer '{arguments.get('customer_name')}'")]
-    
+        return [TextContent(type="text", text=f"No jobs/invoices found for '{customer_name}'")]
+
     return [TextContent(type="text", text=json.dumps(results, indent=2, default=str))]
 
 
-async def _get_ar_summary(client, arguments: dict) -> list[TextContent]:
+async def _get_ar_summary(db, arguments: dict) -> list[TextContent]:
     """Get accounts receivable summary."""
-    min_balance = arguments.get("min_balance", 0)
-    
+    min_balance = float(arguments.get("min_balance", 0))
+
     if Config.USE_MOCK_DATA:
         ar_data = []
-        total = 0
+        total = 0.0
         for cust in MOCK_CUSTOMERS.values():
             if cust["balance"] >= min_balance:
                 ar_data.append({
                     "customer": cust["name"],
-                    "account_number": cust["account_number"],
+                    "account_number": cust["accountnumber"],
                     "balance": cust["balance"],
-                    "credit_status": cust["credit_status"],
-                    "credit_limit": cust["credit_limit"]
+                    "credit_status": cust["creditstatus"],
+                    "credit_limit": cust["creditlimit"]
                 })
                 total += cust["balance"]
     else:
-        # Note: Real implementation would need AR-specific endpoint
-        # This is a placeholder showing the expected structure
         try:
-            customers = await client.search_accounts(limit=100)
+            rows = await db.get_accounts_with_balance(min_balance)
             ar_data = []
-            total = 0
-            for cust in customers:
-                balance = cust.get("balance", 0)
-                if balance >= min_balance:
-                    ar_data.append({
-                        "customer": cust.get("name"),
-                        "account_number": cust.get("account_number"),
-                        "balance": balance,
-                        "credit_status": cust.get("credit_status"),
-                        "credit_limit": cust.get("credit_limit")
-                    })
-                    total += balance
+            total = 0.0
+            for row in rows:
+                balance = float(row.get("balance") or 0)
+                ar_data.append({
+                    "customer": row.get("name"),
+                    "account_number": row.get("accountnumber"),
+                    "balance": balance,
+                    "credit_status": row.get("creditstatus"),
+                    "credit_limit": row.get("creditlimit"),
+                })
+                total += balance
         except Exception as e:
-            return [TextContent(type="text", text=f"API error: {str(e)}")]
-    
+            return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
     summary = {
-        "total_outstanding": total,
+        "total_outstanding": round(total, 2),
         "accounts_with_balance": len(ar_data),
         "details": sorted(ar_data, key=lambda x: x["balance"], reverse=True)
     }
-    
+
     return [TextContent(type="text", text=json.dumps(summary, indent=2, default=str))]
 
 
-async def _get_estimate(client, arguments: dict) -> list[TextContent]:
+async def _get_estimate(db, arguments: dict) -> list[TextContent]:
     """Get a specific estimate."""
-    estimate_number = arguments.get("estimate_number", "").upper().strip()
-    
-    if not estimate_number:
+    estimate_ref = arguments.get("estimate_number", "").strip()
+
+    if not estimate_ref:
         return [TextContent(type="text", text="Please provide an estimate number.")]
-    
+
     if Config.USE_MOCK_DATA:
-        estimate = MOCK_ESTIMATES.get(estimate_number)
+        estimate = MOCK_ESTIMATES.get(estimate_ref.upper())
     else:
         try:
-            estimate = await client.get_estimate(estimate_number)
+            estimate = await db.get_estimate(estimate_ref)
         except Exception as e:
-            return [TextContent(type="text", text=f"API error: {str(e)}")]
-    
+            return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
     if not estimate:
-        return [TextContent(type="text", text=f"Estimate {estimate_number} not found")]
-    
+        return [TextContent(type="text", text=f"Estimate '{estimate_ref}' not found")]
+
     return [TextContent(type="text", text=json.dumps(estimate, indent=2, default=str))]
 
 
-async def _list_pending_estimates(client, arguments: dict) -> list[TextContent]:
+async def _list_pending_estimates(db, arguments: dict) -> list[TextContent]:
     """List pending estimates."""
     customer_filter = arguments.get("customer_name", "").lower()
-    
+
     if Config.USE_MOCK_DATA:
         results = [e for e in MOCK_ESTIMATES.values() if e["status"] == "pending"]
         if customer_filter:
@@ -606,39 +653,97 @@ async def _list_pending_estimates(client, arguments: dict) -> list[TextContent]:
     else:
         try:
             start_date = datetime.now() - timedelta(days=90)
-            results = await client.get_estimates_by_date_range(start_date)
-            results = [e for e in results if e.get("status") == "pending"]
+            results = await db.get_estimates_by_date_range(start_date)
+            results = [e for e in results if str(e.get("status", "")).lower() == "pending"]
             if customer_filter:
-                results = [e for e in results if customer_filter in e.get("customer_name", "").lower()]
+                results = [
+                    e for e in results
+                    if customer_filter in (e.get("customer_name") or e.get("name") or "").lower()
+                ]
         except Exception as e:
-            return [TextContent(type="text", text=f"API error: {str(e)}")]
-    
+            return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
     if not results:
         return [TextContent(type="text", text="No pending estimates found")]
-    
+
     return [TextContent(type="text", text=json.dumps(results, indent=2, default=str))]
 
 
-async def _health_check(client) -> list[TextContent]:
-    """Check PrintSmith connection health."""
+async def _discover_schema(db, arguments: dict) -> list[TextContent]:
+    """Discover the PrintSmith PostgreSQL schema."""
+    table_filter = arguments.get("table_name", "").strip().lower()
+
+    if Config.USE_MOCK_DATA:
+        result = {
+            "mode": "mock_data",
+            "message": "Schema discovery is only available in live database mode.",
+            "mock_tables": ["account", "invoice", "estimate"]
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    try:
+        schema = await db.discover_schema()
+        if table_filter:
+            matching = {k: v for k, v in schema.items() if table_filter in k.lower()}
+            if not matching:
+                return [TextContent(type="text", text=f"No tables matching '{table_filter}' found.\nAll tables: {', '.join(sorted(schema.keys()))}")]
+            return [TextContent(type="text", text=json.dumps(matching, indent=2))]
+        else:
+            # Return table list with column counts to avoid huge output
+            summary = {
+                "table_count": len(schema),
+                "tables": {
+                    tname: {
+                        "column_count": len(cols),
+                        "columns": [c["column"] for c in cols]
+                    }
+                    for tname, cols in sorted(schema.items())
+                }
+            }
+            return [TextContent(type="text", text=json.dumps(summary, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
+
+async def _sample_table(db, arguments: dict) -> list[TextContent]:
+    """Return sample rows from a table."""
+    table_name = arguments.get("table_name", "").strip()
+    limit = min(int(arguments.get("limit", 3)), 10)  # cap at 10
+
+    if not table_name:
+        return [TextContent(type="text", text="Please provide a table name.")]
+
+    if Config.USE_MOCK_DATA:
+        return [TextContent(type="text", text="sample_table is only available in live database mode.")]
+
+    try:
+        rows = await db.sample_table(table_name, limit)
+        if not rows:
+            return [TextContent(type="text", text=f"Table '{table_name}' is empty or does not exist.")]
+        return [TextContent(type="text", text=json.dumps(rows, indent=2, default=str))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Database error: {str(e)}")]
+
+
+async def _health_check(db) -> list[TextContent]:
+    """Check PrintSmith database connection health."""
     if Config.USE_MOCK_DATA:
         result = {
             "status": "healthy",
             "mode": "mock_data",
-            "message": "Using mock data - no PrintSmith connection configured"
+            "message": "Using mock data — no PostgreSQL connection configured"
         }
     else:
         try:
-            result = await client.health_check()
-            result["mode"] = "live"
-            result["base_url"] = Config.PRINTSMITH_BASE_URL
+            result = await db.health_check()
+            result["mode"] = "live_postgres"
         except Exception as e:
             result = {
                 "status": "unhealthy",
-                "mode": "live",
+                "mode": "live_postgres",
                 "message": str(e)
             }
-    
+
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
@@ -664,10 +769,11 @@ async def read_resource(uri: str) -> str:
     """Read a resource."""
     if uri == "printsmith://status":
         return json.dumps({
-            "mode": "mock_data" if Config.USE_MOCK_DATA else "live",
-            "printsmith_url": Config.PRINTSMITH_BASE_URL if not Config.USE_MOCK_DATA else None,
+            "mode": "mock_data" if Config.USE_MOCK_DATA else "live_postgres",
+            "pg_host": Config.PG_HOST if not Config.USE_MOCK_DATA else None,
+            "pg_database": Config.PG_DATABASE if not Config.USE_MOCK_DATA else None,
             "transport": Config.MCP_TRANSPORT,
-            "tools_available": 8,
+            "tools_available": 10,
             "read_only": True
         }, indent=2)
     else:
@@ -675,15 +781,15 @@ async def read_resource(uri: str) -> str:
 
 
 # =============================================================================
-# MAIN - Transport Selection
+# MAIN — Transport Selection
 # =============================================================================
 
 async def run_stdio():
     """Run server with STDIO transport (for local Claude Desktop)."""
     from mcp.server.stdio import stdio_server
-    
+
     logger.info("Starting PrintSmith MCP server (STDIO transport)")
-    
+
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
@@ -693,17 +799,20 @@ async def run_stdio():
 
 
 async def run_http():
-    """Run server with HTTP/SSE transport (for remote access)."""
+    """Run server with HTTP/SSE transport (for remote/LXC access)."""
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
     from starlette.routing import Route
     from starlette.responses import JSONResponse
     import uvicorn
-    
-    logger.info(f"Starting PrintSmith MCP server (HTTP transport on {Config.MCP_HTTP_HOST}:{Config.MCP_HTTP_PORT})")
-    
+
+    logger.info(
+        f"Starting PrintSmith MCP server "
+        f"(HTTP transport on {Config.MCP_HTTP_HOST}:{Config.MCP_HTTP_PORT})"
+    )
+
     sse = SseServerTransport("/messages")
-    
+
     async def handle_sse(request):
         async with sse.connect_sse(
             request.scope, request.receive, request._send
@@ -713,13 +822,13 @@ async def run_http():
                 streams[1],
                 server.create_initialization_options()
             )
-    
+
     async def handle_messages(request):
         await sse.handle_post_message(request.scope, request.receive, request._send)
-    
+
     async def health(request):
         return JSONResponse({"status": "ok", "server": "printsmith-mcp"})
-    
+
     app = Starlette(
         routes=[
             Route("/health", health),
@@ -727,7 +836,7 @@ async def run_http():
             Route("/messages", handle_messages, methods=["POST"]),
         ]
     )
-    
+
     config = uvicorn.Config(
         app,
         host=Config.MCP_HTTP_HOST,
@@ -739,7 +848,7 @@ async def run_http():
 
 
 async def main():
-    """Main entry point."""
+    """Main entry point — select transport based on MCP_TRANSPORT env var."""
     if Config.MCP_TRANSPORT == "http":
         await run_http()
     else:
