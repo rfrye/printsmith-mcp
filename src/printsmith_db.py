@@ -169,7 +169,7 @@ class PrintSmithDB:
         return await self._fetchrow("""
             SELECT *
             FROM account
-            WHERE accountid = $1
+            WHERE id = $1
         """, pk)
 
     async def get_account_by_number(self, account_number: str) -> Optional[dict]:
@@ -177,7 +177,7 @@ class PrintSmithDB:
         return await self._fetchrow("""
             SELECT *
             FROM account
-            WHERE accountnumber = $1
+            WHERE useracctid = $1
         """, account_number)
 
     async def search_accounts(self, name: str = None, limit: int = 50) -> list[dict]:
@@ -186,15 +186,15 @@ class PrintSmithDB:
             return await self._fetch("""
                 SELECT *
                 FROM account
-                WHERE LOWER(name) LIKE LOWER($1)
-                ORDER BY name
+                WHERE LOWER(title) LIKE LOWER($1)
+                ORDER BY title
                 LIMIT $2
             """, f"%{name}%", limit)
         else:
             return await self._fetch("""
                 SELECT *
                 FROM account
-                ORDER BY name
+                ORDER BY title
                 LIMIT $1
             """, limit)
 
@@ -202,9 +202,9 @@ class PrintSmithDB:
         """Get accounts with an AR balance at or above min_balance."""
         return await self._fetch("""
             SELECT
-                accountid,
-                name,
-                accountnumber,
+                id,
+                title,
+                useracctid,
                 balance,
                 creditstatus,
                 creditlimit
@@ -225,18 +225,18 @@ class PrintSmithDB:
             raise PrintSmithDBError(f"invoice_id must be numeric, got: '{invoice_id}'")
 
         return await self._fetchrow("""
-            SELECT i.*, a.name AS customer_name
-            FROM invoice i
-            LEFT JOIN account a ON i.accountid = a.accountid
+            SELECT i.*, a.title AS customer_name
+            FROM invoicebase i
+            LEFT JOIN account a ON i.account_id = a.id
             WHERE i.invoiceid = $1
         """, pk)
 
     async def get_invoice_by_number(self, invoice_number: str) -> Optional[dict]:
         """Get invoice by invoice/job number."""
         return await self._fetchrow("""
-            SELECT i.*, a.name AS customer_name
-            FROM invoice i
-            LEFT JOIN account a ON i.accountid = a.accountid
+            SELECT i.*, a.title AS customer_name
+            FROM invoicebase i
+            LEFT JOIN account a ON i.account_id = a.id
             WHERE i.invoicenumber = $1
         """, invoice_number)
 
@@ -248,10 +248,10 @@ class PrintSmithDB:
             raise PrintSmithDBError(f"account_id must be numeric, got: '{account_id}'")
 
         return await self._fetch("""
-            SELECT i.*, a.name AS customer_name
-            FROM invoice i
-            LEFT JOIN account a ON i.accountid = a.accountid
-            WHERE i.accountid = $1
+            SELECT i.*, a.title AS customer_name
+            FROM invoicebase i
+            LEFT JOIN account a ON i.account_id = a.id
+            WHERE i.account_id = $1
             ORDER BY i.createdate DESC
             LIMIT 100
         """, pk)
@@ -266,9 +266,9 @@ class PrintSmithDB:
             end_date = datetime.now()
 
         return await self._fetch("""
-            SELECT i.*, a.name AS customer_name
-            FROM invoice i
-            LEFT JOIN account a ON i.accountid = a.accountid
+            SELECT i.*, a.title AS customer_name
+            FROM invoicebase i
+            LEFT JOIN account a ON i.account_id = a.id
             WHERE i.createdate BETWEEN $1 AND $2
             ORDER BY i.createdate DESC
         """, start_date, end_date)
@@ -276,9 +276,9 @@ class PrintSmithDB:
     async def get_invoices_by_status(self, status: str) -> list[dict]:
         """Get invoices filtered by status string."""
         return await self._fetch("""
-            SELECT i.*, a.name AS customer_name
-            FROM invoice i
-            LEFT JOIN account a ON i.accountid = a.accountid
+            SELECT i.*, a.title AS customer_name
+            FROM invoicebase i
+            LEFT JOIN account a ON i.account_id = a.id
             WHERE LOWER(i.status) = LOWER($1)
             ORDER BY i.duedate ASC
         """, status)
@@ -291,17 +291,17 @@ class PrintSmithDB:
         """Get estimate by estimate number or numeric ID."""
         # Try by estimate number first (the user-facing value)
         row = await self._fetchrow("""
-            SELECT e.*, a.name AS customer_name
+            SELECT e.*, a.title AS customer_name
             FROM estimate e
-            LEFT JOIN account a ON e.accountid = a.accountid
+            LEFT JOIN account a ON e.account_id = a.id
             WHERE e.estimatenumber = $1
         """, estimate_ref)
 
         if row is None and estimate_ref.isdigit():
             row = await self._fetchrow("""
-                SELECT e.*, a.name AS customer_name
+                SELECT e.*, a.title AS customer_name
                 FROM estimate e
-                LEFT JOIN account a ON e.accountid = a.accountid
+                LEFT JOIN account a ON e.account_id = a.id
                 WHERE e.estimateid = $1
             """, int(estimate_ref))
 
@@ -315,10 +315,10 @@ class PrintSmithDB:
             raise PrintSmithDBError(f"account_id must be numeric, got: '{account_id}'")
 
         return await self._fetch("""
-            SELECT e.*, a.name AS customer_name
+            SELECT e.*, a.title AS customer_name
             FROM estimate e
-            LEFT JOIN account a ON e.accountid = a.accountid
-            WHERE e.accountid = $1
+            LEFT JOIN account a ON e.account_id = a.id
+            WHERE e.account_id = $1
             ORDER BY e.createdate DESC
         """, pk)
 
@@ -332,9 +332,9 @@ class PrintSmithDB:
             end_date = datetime.now()
 
         return await self._fetch("""
-            SELECT e.*, a.name AS customer_name
+            SELECT e.*, a.title AS customer_name
             FROM estimate e
-            LEFT JOIN account a ON e.accountid = a.accountid
+            LEFT JOIN account a ON e.account_id = a.id
             WHERE e.createdate BETWEEN $1 AND $2
             ORDER BY e.createdate DESC
         """, start_date, end_date)
@@ -353,7 +353,7 @@ class PrintSmithDB:
         return await self._fetch("""
             SELECT *
             FROM contact
-            WHERE accountid = $1
+            WHERE account_id = $1
             ORDER BY name
         """, pk)
 

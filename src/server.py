@@ -305,6 +305,10 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Optional: only show jobs from the last N days (default: 30)",
                         "default": 30
+                    },
+                    "taken_by": {
+                        "type": "string",
+                        "description": "Optional: filter by employee who took the order (e.g., 'Kevin Frye', 'Kelly Knowles', 'Rob Frye')"
                     }
                 },
                 "required": []
@@ -519,6 +523,7 @@ async def _list_jobs(db, arguments: dict) -> list[TextContent]:
     status_filter = arguments.get("status", "all")
     customer_filter = arguments.get("customer_name", "").lower()
     days_back = arguments.get("days_back", 30)
+    taken_by_filter = arguments.get("taken_by", "").strip().lower()
 
     if Config.USE_MOCK_DATA:
         results = []
@@ -528,6 +533,8 @@ async def _list_jobs(db, arguments: dict) -> list[TextContent]:
             if status_filter != "all" and inv["status"] != status_filter:
                 continue
             if customer_filter and customer_filter not in inv["customer_name"].lower():
+                continue
+            if taken_by_filter and taken_by_filter not in inv.get("takenby", "").lower():
                 continue
             inv_date = datetime.strptime(inv["createdate"], "%Y-%m-%d")
             if inv_date < cutoff_date:
@@ -545,6 +552,11 @@ async def _list_jobs(db, arguments: dict) -> list[TextContent]:
                 results = [
                     r for r in results
                     if customer_filter in (r.get("customer_name") or r.get("name") or "").lower()
+                ]
+            if taken_by_filter:
+                results = [
+                    r for r in results
+                    if taken_by_filter in (r.get("takenby") or "").lower()
                 ]
         except Exception as e:
             return [TextContent(type="text", text=f"Database error: {str(e)}")]
@@ -573,7 +585,7 @@ async def _get_customer_jobs(db, arguments: dict) -> list[TextContent]:
             if not customers:
                 return [TextContent(type="text", text=f"No customer found matching '{customer_name}'")]
 
-            account_id = str(customers[0].get("accountid") or customers[0].get("account_id") or "")
+            account_id = str(customers[0].get("id") or customers[0].get("accountid") or customers[0].get("account_id") or "")
             if not account_id:
                 return [TextContent(type="text", text="Found customer but could not determine account ID")]
 
@@ -612,8 +624,8 @@ async def _get_ar_summary(db, arguments: dict) -> list[TextContent]:
             for row in rows:
                 balance = float(row.get("balance") or 0)
                 ar_data.append({
-                    "customer": row.get("name"),
-                    "account_number": row.get("accountnumber"),
+                    "customer": row.get("title") or row.get("name"),
+                    "account_number": row.get("useracctid") or row.get("accountnumber"),
                     "balance": balance,
                     "credit_status": row.get("creditstatus"),
                     "credit_limit": row.get("creditlimit"),
