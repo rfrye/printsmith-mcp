@@ -35,6 +35,16 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any
+from pathlib import Path
+
+# Auto-load .env from the project root (one level up from src/)
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(__file__).parent.parent / ".env"
+    if _env_path.exists():
+        load_dotenv(_env_path)
+except ImportError:
+    pass  # python-dotenv not installed — rely on shell environment
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent, Resource

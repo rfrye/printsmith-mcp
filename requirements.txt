@@ -10,3 +10,6 @@ starlette>=0.38.0
 
 # Async support
 anyio>=4.0.0
+
+# Auto-load .env file
+python-dotenv>=1.0.0
