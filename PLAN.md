@@ -1,6 +1,6 @@
 # PrintSmith MCP — Production Plan
 
-> Created: 2026-03-17. Pick up from here next session.
+> Created: 2026-03-17. Last updated: 2026-03-17.
 
 ---
 
@@ -87,15 +87,41 @@ Reasons:
 
 ---
 
-## Information Still Needed (collect before Phase 1)
+## Environment — Collected
 
-| Item | Status |
-|------|--------|
-| Proxmox host IP and intended CTID for new LXC | Not collected |
-| PrintSmith Postgres host IP | Not collected |
-| Postgres credentials currently used for the dump | Not collected |
-| PrintSmith Postgres version (`SELECT version();`) | Not collected |
-| LAN subnet (e.g. `192.168.1.0/24`) for pg_hba.conf | Not collected |
+| Item | Value |
+|------|-------|
+| PrintSmith Postgres host | `10.0.0.126` |
+| Postgres port | `5432` |
+| Postgres database | `printsmith` |
+| Postgres superuser | `postgres` / `postgres` (default — see read-only user plan below) |
+| Postgres version | `9.3.4` (Visual C++ build, 64-bit) — **see compatibility note** |
+| LAN subnet | `10.0.0.0/24` |
+| Proxmox host IP | `10.0.0.99` |
+| New LXC CTID | `300` |
+
+### PostgreSQL 9.3 Compatibility Note
+
+PrintSmith ships with **PostgreSQL 9.3.4**, which is EOL (end of life since 2018). This affects the sync pipeline:
+
+- `pg_dump` on the LXC must be version **9.3.x** OR a newer client (10+) using `--no-privileges --no-owner` — modern `pg_dump` can dump from older servers but format differences exist
+- **Recommended**: install `postgresql-client-9.3` on the LXC, or use `pg_dump` ≥ 10 with `--format=plain` and test carefully
+- `asyncpg` (used by the MCP server) supports PostgreSQL 9.3+ — no issue there
+
+### Read-Only User Plan
+
+**Before using `postgres/postgres` for anything, create a dedicated read-only user.**
+Run this on the PrintSmith Postgres (connect as `postgres`):
+
+```sql
+CREATE USER mcp_readonly WITH PASSWORD 'choose-a-strong-password';
+GRANT CONNECT ON DATABASE printsmith TO mcp_readonly;
+GRANT USAGE ON SCHEMA public TO mcp_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_readonly;
+```
+
+Then use `mcp_readonly` for all `pg_dump` and MCP server connections. The `postgres` superuser credentials should never appear in any script or `.env` file.
 
 ---
 
@@ -108,9 +134,24 @@ Reasons:
 
 ---
 
+## GitHub Setup
+
+The repo should live on GitHub for backup, version history, and easy access from any session.
+
+Steps (one-time, do before next working session):
+1. Create a new **private** repo on GitHub (e.g. `rfrye/printsmith-mcp`)
+2. Add it as a remote: `git remote add github git@github.com:rfrye/printsmith-mcp.git`
+3. Push all branches: `git push github --all`
+4. From then on push to both remotes, or set GitHub as the primary remote
+
+The `.env` file is already in `.gitignore` (or should be verified) — credentials must never be committed.
+
+---
+
 ## Notes
 
 - `src/printsmith_client.py` is a legacy HTTP API client — not used, kept for reference
 - Schema column names vary by PrintSmith installation — use `discover_schema` tool if queries break
 - HTTP transport mode (`MCP_TRANSPORT=http`) is what Claude Desktop will use for remote LXC access
 - SSE endpoint: `/sse`, health check: `/health`
+- The `postgres` superuser password is the default (`postgres`) — change it or ensure firewall rules prevent external access
